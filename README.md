@@ -1,8 +1,8 @@
-# X-KISS / ALEPH
+# X-KISS-ALEPH-Y
 
 **Relational modelling, reversible dynamics, and structure-preserving state transport**
 
-X-KISS / ALEPH is a relational framework for modelling, analysing, and transforming complex systems. Its executable kernel combines coupled state spaces, norm-preserving transformations, opposing feedback flows, reconstructible evolution, and a transport mechanism that transfers the complete state, including its relations and passage memory.
+X-KISS-ALEPH-Y is a relational framework for modelling, analysing, and transforming complex systems. Its executable kernel combines coupled state spaces, norm-preserving transformations, opposing feedback flows, reconstructible evolution, and a transport mechanism that transfers the complete state, including its relations and passage memory.
 
 Aleph supports two interconnected modes of use: as software, its states can be computed, transformed, transferred, and restored; as an analytical method, its relational structure can guide the investigation of data, concepts, and complex interdependencies. This opens up applications in AI, scientific modelling, pattern recognition, simulation, reversible computation, and cooperating systems.
 
