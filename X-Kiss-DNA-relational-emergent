@@ -1,0 +1,1115 @@
+
+# -*- coding: utf-8 -*-
+"""
+DNA_From_Within_U6_Emergent
+===========================
+
+Vollrelationale, strukturell emergente Fassung der U6-DNA-Kontextkarte.
+
+Von innen beobachtet. Der Leser ist Teil der Struktur, keine externe Null.
+Jede Auswahl ist als Gewicht im algebraischen Ausdruck sichtbar.
+Jede Richtung ist ein Faktor, kein Verzweigungssprung.
+
+Atome: kron(a,b), Addition, Multiplikation, Division, min/max, Tupel.
+Dynamische Verzweigungen existieren nur noch als Randbegrenzungen
+(Wertebereich, Typen) an den Raendern des Modells.
+
+Bewegung: pulse(state, direction), direction ∈ {+1, -1}.
+          step = pulse(+1), unstep = pulse(-1), exakt invers.
+Sicht:    view(state, reader); Lesestelle liest ihre Selbstrelation als 0.
+Skala:    Scale.pulse(direction); Faktor BASE^(-direction), kein Vorzeichen.
+Kreuzung: crossing_orbit(locus); F^k(a) = a^(2^k) mod 9, Gewichte via kron.
+Rollen:   structural_role(orbit); Nullstellen statt dict-Lookup.
+Lesen:    read_contexts(sight, scope); Scope als 10x10 Maske, kein if.
+"""
+from dataclasses import dataclass, replace
+from fractions import Fraction
+from itertools import product
+from random import Random
+import unittest
+
+
+# ===========================================================================
+# 0  Atome
+# ===========================================================================
+
+def kron(a, b):
+    """Delta(a,b) in {0,1}. Die einzige zugelassene 0/1-Erzeugung."""
+    return int(a == b)
+
+
+def repeat(piece, weight):
+    """piece wird weight-mal wiederholt. weight ist 0 oder 1."""
+    return piece * int(weight)
+
+
+# ===========================================================================
+# 1  Adressraum
+# ===========================================================================
+
+PAIRS = ((1, 8), (3, 6), (4, 5), (2, 7))
+REFERENCE = sum(PAIRS[0])
+UNIT = Fraction(REFERENCE, REFERENCE)
+BASE = REFERENCE + int(UNIT)
+TWO = len(PAIRS[0])
+ZERO = UNIT - UNIT
+ADDRESSES = tuple(range(BASE))
+
+
+def dr(n):
+    return n % REFERENCE
+
+
+def strand(a):
+    return Fraction(a, REFERENCE)
+
+
+def complement(a):
+    return REFERENCE - a
+
+
+def layer_sum(a, b):
+    return a + b
+
+
+def layer_cross(a):
+    return dr(a * a)
+
+
+STRAND_NAMES = {
+    1: "Mars ueber Pluto", 8: "Pluto ueber Mars",
+    2: "Venus geometrisch", 7: "Venus dynamisch",
+    3: "Merkur dynamisch", 6: "Merkur geometrisch",
+    4: "Mond", 5: "Sonne",
+    0: "Null-Endpunkt", 9: "Abschluss-Endpunkt",
+}
+
+
+# ===========================================================================
+# 2  Relationen als 0/1-Matrizen
+# ===========================================================================
+
+_EDGE_CANDIDATES = (
+    tuple((a, complement(a)) for a in ADDRESSES)
+    + tuple((a, layer_cross(a)) for a in ADDRESSES)
+    + tuple((complement(a), complement(layer_cross(a))) for a in ADDRESSES)
+)
+
+EDGES = tuple(sorted({
+    (min(a, b), max(a, b))
+    for a, b in _EDGE_CANDIDATES
+    if a != b
+}))
+
+EDGE_SET = frozenset(EDGES)
+
+N_MATRIX = tuple(
+    tuple(int((min(a, b), max(a, b)) in EDGE_SET) for b in ADDRESSES)
+    for a in ADDRESSES
+)
+
+DEGREES = tuple(sum(row) for row in N_MATRIX)
+
+NEIGHBORS = tuple(
+    tuple(b for b in ADDRESSES if N_MATRIX[a][b])
+    for a in ADDRESSES
+)
+
+
+# ===========================================================================
+# 3  Erreichbarkeit und Komponenten (if-frei ueber min/max)
+# ===========================================================================
+
+def _build_reachability():
+    reach = [[kron(a, b) + N_MATRIX[a][b] for b in ADDRESSES]
+             for a in ADDRESSES]
+    for k in ADDRESSES:
+        for a in ADDRESSES:
+            for b in ADDRESSES:
+                reach[a][b] = max(reach[a][b],
+                                  min(reach[a][k], reach[k][b]))
+    return tuple(tuple(row) for row in reach)
+
+
+REACH = _build_reachability()
+
+# Komponentenmarke = kleinste erreichbare Adresse (in BASE-Kodierung).
+COMPONENT_OF = tuple(
+    min(b + BASE * (1 - REACH[a][b]) for b in ADDRESSES)
+    for a in ADDRESSES
+)
+
+
+def components():
+    labels = tuple(sorted(set(COMPONENT_OF)))
+    return tuple(
+        tuple(a for a in ADDRESSES if COMPONENT_OF[a] == label)
+        for label in labels
+    )
+
+
+# ===========================================================================
+# 4  Kraft, Mittel, Zentrierung
+# ===========================================================================
+
+def force(q):
+    return tuple(
+        sum(N_MATRIX[a][b] * (q[b] - q[a]) for b in ADDRESSES)
+        for a in ADDRESSES
+    )
+
+
+def mean(values):
+    return sum(values, ZERO) / len(values)
+
+
+def centered(values):
+    m = mean(values)
+    return tuple(v - m for v in values)
+
+
+# ===========================================================================
+# 5  Fiber und Skala
+# ===========================================================================
+
+@dataclass(frozen=True)
+class Fiber:
+    address: int
+    opposite: int
+    crossing: int
+    shell: Fraction
+    period: Fraction
+    opposite_period: Fraction
+    name: str
+
+
+def fiber(a):
+    return Fiber(a, complement(a), layer_cross(a),
+                 abs(Fraction(a) - Fraction(REFERENCE, TWO)),
+                 strand(a), strand(complement(a)), STRAND_NAMES[a])
+
+
+FIBERS = tuple(fiber(a) for a in ADDRESSES)
+LOOP_SEED = layer_cross(PAIRS[-1][0])
+LOOP = (LOOP_SEED, layer_cross(LOOP_SEED))
+
+
+@dataclass(frozen=True)
+class Scale:
+    closed: Fraction
+    rest: Fraction
+    big: Fraction
+    big_nines: Fraction
+
+    @property
+    def total(self):
+        return self.closed + self.rest
+
+    def pulse(self, direction):
+        """direction ∈ {+1, -1}. Faktor = BASE^(-direction).
+        Kein if; die Richtung ist ein Exponent."""
+        factor = Fraction(BASE) ** (-direction)
+        new_rest = self.rest * factor
+        new_big = self.big / factor
+        return Scale(self.total - new_rest, new_rest,
+                     new_big, new_big - self.total)
+
+    def normalized_big_pair(self):
+        return (self.big_nines * self.total / self.big,
+                self.total * self.total / self.big)
+
+
+def scale_seed(n=1):
+    big = Fraction(BASE) ** n
+    rest = UNIT / big
+    return Scale(UNIT - rest, rest, big, big - UNIT)
+
+
+def residue_fraction(value):
+    value = Fraction(value)
+    return (value.numerator * pow(value.denominator, -1, REFERENCE)) % REFERENCE
+
+
+# ===========================================================================
+# 6  Zustand, Puls, Inversion
+# ===========================================================================
+
+@dataclass(frozen=True)
+class State:
+    q: tuple
+    p: tuple
+    scale: Scale
+    loop: tuple = LOOP
+
+
+def seed(n=1):
+    q = tuple(strand(a) for a in ADDRESSES)
+    p = tuple(strand(a) - strand(complement(a)) for a in ADDRESSES)
+    return State(q, p, scale_seed(n))
+
+
+def shear_pair(q, p, h):
+    """Symmetrische Scherung aus einem unveraenderlichen Snapshot.
+    shear_pair(q, p, -h) ist exakte Inverse zu shear_pair(q, p, h)."""
+    p_half = tuple(v + h * f / TWO for v, f in zip(p, force(q)))
+    q_new = tuple(v + h * d for v, d in zip(q, centered(p_half)))
+    p_new = tuple(v + h * f / TWO for v, f in zip(p_half, force(q_new)))
+    return q_new, p_new
+
+
+def pulse(state, direction):
+    """Der einzige Bewegungsausdruck. direction ∈ {+1, -1}.
+    step und unstep sind zwei Exponenten desselben algebraischen Pulses."""
+    new_scale = state.scale.pulse(direction)
+    h = (state.scale.rest + new_scale.rest) / (TWO * state.scale.total)
+    q, p = shear_pair(state.q, state.p, h * direction)
+    new_loop = tuple(layer_cross(v) for v in state.loop)
+    return State(q, p, new_scale, new_loop)
+
+
+def step(state):
+    return pulse(state, +1)
+
+
+def unstep(state):
+    return pulse(state, -1)
+
+
+def validate(state):
+    if len(state.q) != BASE or len(state.p) != BASE:
+        raise ValueError("Jede abgeschlossene Adresse braucht q und p.")
+    if not all(isinstance(v, Fraction) for v in (*state.q, *state.p)):
+        raise ValueError("Felder muessen exakte Fraction-Werte tragen.")
+    s = state.scale
+    if s.total <= ZERO or s.rest <= ZERO or s.big <= ZERO:
+        raise ValueError("Abschluss, Rest und Skalenfaktor muessen positiv sein.")
+    if s.big - s.big_nines != s.total or s.big * s.rest != s.total ** TWO:
+        raise ValueError("Die beiden Polpaare muessen dieselbe Beziehung tragen.")
+    if state.loop not in (LOOP, LOOP[::-1]):
+        raise ValueError("Die Schleife muss den gefundenen Zweizyklus tragen.")
+
+
+# ===========================================================================
+# 7  Sicht, Umbezug, mitbewegte Entwicklung
+# ===========================================================================
+
+@dataclass(frozen=True)
+class View:
+    reader: int
+    q: tuple
+    p: tuple
+    scale: Scale
+    loop: tuple
+
+
+def view(state, reader):
+    return View(reader,
+                tuple(v - state.q[reader] for v in state.q),
+                tuple(v - state.p[reader] for v in state.p),
+                state.scale, state.loop)
+
+
+def rereference(sight, reader):
+    return View(reader,
+                tuple(v - sight.q[reader] for v in sight.q),
+                tuple(v - sight.p[reader] for v in sight.p),
+                sight.scale, sight.loop)
+
+
+def evolve_view(sight):
+    local = State(sight.q, sight.p, sight.scale, sight.loop)
+    return view(step(local), sight.reader)
+
+
+def gauge_shift(state, q_offset, p_offset):
+    return replace(state,
+                   q=tuple(v + q_offset for v in state.q),
+                   p=tuple(v + p_offset for v in state.p))
+
+
+def mirror(state):
+    return replace(state,
+                   q=tuple(state.q[complement(a)] for a in ADDRESSES),
+                   p=tuple(state.p[complement(a)] for a in ADDRESSES))
+
+
+# ===========================================================================
+# 8  DNA-Schicht
+# ===========================================================================
+
+BASE_COMPLEMENT = {"A": "T", "T": "A", "C": "G", "G": "C"}
+BASE_NAMES = {"A": "Adenin", "T": "Thymin", "C": "Cytosin", "G": "Guanin"}
+
+
+def require_locus(locus):
+    valid = (type(locus) is int) and (locus in ADDRESSES)
+    if not valid:
+        raise ValueError("Der Lesebezug muss eine der U6-Adressen sein.")
+
+
+@dataclass(frozen=True)
+class TranslationSchema:
+    name: str
+    bases: tuple
+    candidate_roles: tuple
+
+    def __post_init__(self):
+        if not isinstance(self.bases, tuple) \
+           or not isinstance(self.candidate_roles, tuple):
+            raise ValueError("Die Zuordnung muss unveraenderliche Tupel tragen.")
+        if len(self.bases) != BASE or len(self.candidate_roles) != BASE:
+            raise ValueError("Jede Adresse braucht einen Kontexteintrag.")
+        if self.bases[0] is not None or self.bases[REFERENCE] is not None:
+            raise ValueError("Endadressen sind Grenzkontexte, keine Basen.")
+        for a in range(1, REFERENCE):
+            if self.bases[a] not in BASE_COMPLEMENT:
+                raise ValueError("Innere Kontexte brauchen A, T, C oder G.")
+            if self.bases[complement(a)] != BASE_COMPLEMENT[self.bases[a]]:
+                raise ValueError("Basenkarte und U6-Komplement muessen passen.")
+
+
+DEFAULT_DNA_SCHEMA = TranslationSchema(
+    "Vorgelegte DNA-Kontextzuordnung (Hypothese)",
+    (None, "T", "C", "G", "A", "T", "C", "G", "A", None),
+    ("5'-Grenzlesart / Telomerzuordnung offen",
+     "Promotor-Flanke A", "Epigenetisch stabil", "Exon-Kern",
+     "Zentral-Katalysator", "Zentral-Stabilisator", "Intron-Flanke",
+     "Epigenetisch dynamisch", "Terminator-Flanke A",
+     "3'-Grenzlesart / Telomerzuordnung offen"),
+)
+
+
+def genomic_name(locus, schema=DEFAULT_DNA_SCHEMA):
+    require_locus(locus)
+    label = BASE_NAMES.get(schema.bases[locus], "Grenzkontext")
+    return f"{label} ({schema.candidate_roles[locus]}; Zuordnungshypothese)"
+
+
+DNA_GENOMIC_NAMES = {a: genomic_name(a) for a in ADDRESSES}
+
+
+@dataclass(frozen=True)
+class CrossingOrbit:
+    transient: tuple
+    cycle: tuple
+
+
+TRAJECTORY_STEPS = 3
+TRAJECTORIES = tuple(
+    tuple(pow(a, 2 ** k, REFERENCE) for k in range(TRAJECTORY_STEPS + 1))
+    for a in ADDRESSES
+)
+
+
+def crossing_orbit(locus):
+    """F-Verlauf, gewichtet aus Kronecker-Deltas. Kein if.
+    F^k(a) = a^(2^k) mod 9, daher reicht die Trajektorie bis k=3."""
+    t = TRAJECTORIES[locus]
+    w_fixed = kron(t[0], t[1])
+    not_fixed = 1 - w_fixed
+    is_fixed_t1 = kron(t[1], t[2])
+    not_fixed_t1 = 1 - is_fixed_t1
+    w_trans_fixed = not_fixed * is_fixed_t1
+    w_pure_2cycle = not_fixed * not_fixed_t1 * kron(t[0], t[2])
+    w_trans_2cycle = not_fixed * not_fixed_t1 * (1 - kron(t[0], t[2]))
+
+    transient = ()
+    transient = transient + repeat((t[0],), w_trans_fixed + w_trans_2cycle)
+
+    cycle = ()
+    cycle = cycle + repeat((t[0],), w_fixed)
+    cycle = cycle + repeat((t[1],), w_trans_fixed)
+    cycle = cycle + repeat((t[0], t[1]), w_pure_2cycle)
+    cycle = cycle + repeat((t[1], t[2]), w_trans_2cycle)
+    return CrossingOrbit(transient, cycle)
+
+
+def structural_role(orbit):
+    c = orbit.cycle
+    n = len(c)
+    c0 = c[0]
+    w_0 = kron(n, 1) * kron(c0, 0)
+    w_1 = kron(n, 1) * kron(c0, 1)
+    w_loop = kron(n, 2)
+    return (
+        w_0 * "Grenzverlauf zur Null-Lesart"
+        + w_1 * "Grenzverlauf zur Eins-Lesart"
+        + w_loop * "Gegenlaeufige Mittelschleife"
+    )
+
+
+@dataclass(frozen=True)
+class NucleotideFiber:
+    locus: int
+    complementary_locus: int
+    base: str
+    complementary_base: str
+    context_crossing: int
+    radial_shell: Fraction
+    strand_fraction: Fraction
+    counter_strand_fraction: Fraction
+    orbit: CrossingOrbit
+    structural_role: str
+    candidate_biological_role: str
+
+    @property
+    def is_boundary(self):
+        return self.base is None
+
+
+def translate_fiber(locus, schema=DEFAULT_DNA_SCHEMA):
+    require_locus(locus)
+    orbit = crossing_orbit(locus)
+    return NucleotideFiber(
+        locus=locus,
+        complementary_locus=complement(locus),
+        base=schema.bases[locus],
+        complementary_base=schema.bases[complement(locus)],
+        context_crossing=layer_cross(locus),
+        radial_shell=abs(Fraction(locus) - Fraction(REFERENCE, TWO)),
+        strand_fraction=strand(locus),
+        counter_strand_fraction=strand(complement(locus)),
+        orbit=orbit,
+        structural_role=structural_role(orbit),
+        candidate_biological_role=schema.candidate_roles[locus],
+    )
+
+
+@dataclass(frozen=True)
+class FoldingScale:
+    integrated_fraction: Fraction
+    open_fraction: Fraction
+    scale_factor: Fraction
+    complementary_span: Fraction
+
+    @property
+    def total_genomic_field(self):
+        return self.integrated_fraction + self.open_fraction
+
+    @classmethod
+    def from_core(cls, source):
+        return cls(source.closed, source.rest, source.big, source.big_nines)
+
+    def to_core(self):
+        return Scale(self.integrated_fraction, self.open_fraction,
+                     self.scale_factor, self.complementary_span)
+
+    def pulse(self, direction):
+        return FoldingScale.from_core(self.to_core().pulse(direction))
+
+    def normalized_big_pair(self):
+        return self.to_core().normalized_big_pair()
+
+
+@dataclass(frozen=True)
+class SequenceAnnotation:
+    sequence: str
+    loci: tuple
+
+    def __post_init__(self):
+        if not isinstance(self.sequence, str) or not isinstance(self.loci, tuple):
+            raise ValueError("Sequenz und Adressen brauchen Text und Tupel.")
+        if len(self.sequence) != len(self.loci):
+            raise ValueError("Jedes Zeichen braucht eine Kontextadresse.")
+        for base in self.sequence:
+            if base not in BASE_COMPLEMENT:
+                raise ValueError("Nur A, T, C, G in DNA-Annotation.")
+        for locus in self.loci:
+            require_locus(locus)
+            if locus in (0, REFERENCE):
+                raise ValueError("Grenzadressen annotieren kein Nukleotid.")
+
+    def validate_with(self, schema):
+        for base, locus in zip(self.sequence, self.loci):
+            if schema.bases[locus] != base:
+                raise ValueError("Sequenz und Kontextkarte passen nicht zusammen.")
+
+    def reverse_complement(self):
+        return SequenceAnnotation(
+            "".join(BASE_COMPLEMENT[base] for base in reversed(self.sequence)),
+            tuple(complement(locus) for locus in reversed(self.loci)),
+        )
+
+
+@dataclass(frozen=True)
+class DNAState:
+    q: tuple
+    p: tuple
+    scale: FoldingScale
+    loop: tuple
+    schema: TranslationSchema = DEFAULT_DNA_SCHEMA
+    annotation: SequenceAnnotation = None
+
+    def __post_init__(self):
+        if not isinstance(self.q, tuple) or not isinstance(self.p, tuple):
+            raise ValueError("Der Gesamtzustand braucht unveraenderliche Tupel.")
+        if not isinstance(self.scale, FoldingScale):
+            raise ValueError("DNA-Skala muss FoldingScale sein.")
+        if not isinstance(self.schema, TranslationSchema):
+            raise ValueError("Zuordnungsschema muss TranslationSchema sein.")
+        validate(self.to_core())
+        if self.annotation is not None:
+            if not isinstance(self.annotation, SequenceAnnotation):
+                raise ValueError("Annotation muss SequenceAnnotation sein.")
+            self.annotation.validate_with(self.schema)
+
+    @classmethod
+    def from_core(cls, source, schema=DEFAULT_DNA_SCHEMA, annotation=None):
+        return cls(source.q, source.p, FoldingScale.from_core(source.scale),
+                   source.loop, schema, annotation)
+
+    def to_core(self):
+        return State(self.q, self.p, self.scale.to_core(), self.loop)
+
+
+def translate_state(source, schema=DEFAULT_DNA_SCHEMA, annotation=None):
+    return DNAState.from_core(source, schema, annotation)
+
+
+def genomic_seed(n=1, schema=DEFAULT_DNA_SCHEMA, annotation=None):
+    return translate_state(seed(n), schema, annotation)
+
+
+def genomic_pulse(state, direction):
+    return translate_state(pulse(state.to_core(), direction),
+                           state.schema, state.annotation)
+
+
+def genomic_step(state):
+    return genomic_pulse(state, +1)
+
+
+def genomic_unstep(state):
+    return genomic_pulse(state, -1)
+
+
+def genomic_gauge_shift(state, q_offset, p_offset):
+    return translate_state(gauge_shift(state.to_core(), q_offset, p_offset),
+                           state.schema, state.annotation)
+
+
+@dataclass(frozen=True)
+class PolymeraseView:
+    polymerase_locus: int
+    relative_q: tuple
+    relative_p: tuple
+    current_scale: FoldingScale
+    active_loop: tuple
+    schema: TranslationSchema = DEFAULT_DNA_SCHEMA
+    annotation: SequenceAnnotation = None
+
+    def __post_init__(self):
+        require_locus(self.polymerase_locus)
+        DNAState(self.relative_q, self.relative_p, self.current_scale,
+                 self.active_loop, self.schema, self.annotation)
+        if self.relative_q[self.polymerase_locus] != ZERO:
+            raise ValueError("Lesestelle muss ihre Selbstrelation als Null lesen.")
+        if self.relative_p[self.polymerase_locus] != ZERO:
+            raise ValueError("Lesestelle muss ihre Selbstrelation als Null lesen.")
+
+    @classmethod
+    def from_core(cls, source, schema=DEFAULT_DNA_SCHEMA, annotation=None):
+        return cls(source.reader, source.q, source.p,
+                   FoldingScale.from_core(source.scale), source.loop,
+                   schema, annotation)
+
+    def to_core(self):
+        return View(self.polymerase_locus, self.relative_q, self.relative_p,
+                    self.current_scale.to_core(), self.active_loop)
+
+
+def genomic_view(state, polymerase_locus):
+    require_locus(polymerase_locus)
+    return PolymeraseView.from_core(view(state.to_core(), polymerase_locus),
+                                    state.schema, state.annotation)
+
+
+def rereference_genomic_view(sight, polymerase_locus):
+    require_locus(polymerase_locus)
+    return PolymeraseView.from_core(rereference(sight.to_core(), polymerase_locus),
+                                    sight.schema, sight.annotation)
+
+
+def evolve_genomic_view(sight):
+    return PolymeraseView.from_core(evolve_view(sight.to_core()),
+                                    sight.schema, sight.annotation)
+
+
+def rewind_genomic_view(sight):
+    source = State(sight.relative_q, sight.relative_p,
+                   sight.current_scale.to_core(), sight.active_loop)
+    previous = view(unstep(source), sight.polymerase_locus)
+    return PolymeraseView.from_core(previous, sight.schema, sight.annotation)
+
+
+@dataclass(frozen=True)
+class ContextReadout:
+    context: NucleotideFiber
+    relative_q: Fraction
+    relative_p: Fraction
+    complement_q_difference: Fraction
+    complement_p_difference: Fraction
+    current_feedback: Fraction
+    relation_load: Fraction
+    loop_phase: str
+    is_return_address: int
+
+
+def loop_phase(active_loop, locus):
+    """Phase als gewichtete Summe aus Kronecker-Deltas. Kein dict.get."""
+    w1 = kron(locus, active_loop[0])
+    w2 = kron(locus, active_loop[1])
+    phases = ("ausserhalb des Zweizyklus",
+              "erste Schleifenlesart",
+              "zweite Schleifenlesart")
+    return (
+        (1 - w1) * (1 - w2) * phases[0]
+        + w1 * (1 - w2) * phases[1]
+        + (1 - w1) * w2 * phases[2]
+    )
+
+
+def read_context(sight, locus):
+    require_locus(locus)
+    opposite = complement(locus)
+    load = sum(
+        (sight.relative_q[locus] - sight.relative_q[b]) ** TWO
+        for b in NEIGHBORS[locus]
+    ) / TWO
+    return ContextReadout(
+        translate_fiber(locus, sight.schema),
+        sight.relative_q[locus],
+        sight.relative_p[locus],
+        sight.relative_q[locus] - sight.relative_q[opposite],
+        sight.relative_p[locus] - sight.relative_p[opposite],
+        force(sight.relative_q)[locus],
+        load,
+        loop_phase(sight.active_loop, locus),
+        kron(locus, dr(sum(sight.active_loop))),
+    )
+
+
+def build_scope_masks():
+    """Drei 10x10-Masken: all, component, neighborhood. Kein if im Lauf."""
+    all_mask = tuple((1,) * BASE for _ in ADDRESSES)
+    component_mask = tuple(
+        tuple(kron(COMPONENT_OF[a], COMPONENT_OF[b]) for b in ADDRESSES)
+        for a in ADDRESSES
+    )
+    neighborhood_mask = tuple(
+        tuple(N_MATRIX[a][b] + kron(a, b) for b in ADDRESSES)
+        for a in ADDRESSES
+    )
+    return (all_mask, component_mask, neighborhood_mask)
+
+
+SCOPE_MASKS = build_scope_masks()
+SCOPE_INDEX = {"all": 0, "component": 1, "neighborhood": 2}
+
+
+def read_contexts(sight, scope="all"):
+    """Auswahl ueber Maskenmultipikation. Der KeyError ist Randbegrenzung.
+    `for _ in range(row[a])` iteriert 0- oder 1-mal -- kein if."""
+    scope_id = SCOPE_INDEX[scope]
+    row = SCOPE_MASKS[scope_id][sight.polymerase_locus]
+    return tuple(
+        read_context(sight, a)
+        for a in ADDRESSES
+        for _ in range(row[a])
+    )
+
+
+# ===========================================================================
+# 9  Pruefungen
+# ===========================================================================
+
+class RelationalChecks(unittest.TestCase):
+    def test_original_relations_and_preserved_fibers(self):
+        for a, b in PAIRS:
+            self.assertEqual(layer_sum(a, b), REFERENCE)
+            self.assertEqual(layer_cross(a), layer_cross(b))
+            self.assertEqual(strand(a) + strand(b), UNIT)
+        self.assertEqual(tuple(layer_cross(a) for a in range(REFERENCE)),
+                         (0, 1, 4, 0, 7, 7, 0, 4, 1))
+        self.assertNotEqual(fiber(1), fiber(8))
+        self.assertEqual(fiber(1).crossing, fiber(8).crossing)
+        self.assertNotEqual(fiber(0).period, fiber(9).period)
+        self.assertEqual(fiber(0).crossing, fiber(9).crossing)
+        self.assertEqual(dr(sum(LOOP)), PAIRS[-1][0])
+
+    def test_scale_readings_and_domain_boundary(self):
+        for n in (0, 1, 3, 10, 100):
+            s = scale_seed(n)
+            self.assertEqual(s.normalized_big_pair(), (s.closed, s.rest))
+            self.assertGreater(s.rest, ZERO)
+            self.assertEqual(residue_fraction(s.big), 1)
+            self.assertEqual(residue_fraction(s.rest), 1)
+            self.assertEqual(residue_fraction(s.closed), 0)
+            self.assertEqual(residue_fraction(s.big_nines), 0)
+        with self.assertRaises(ValueError):
+            residue_fraction(strand(1))
+        self.assertNotEqual(layer_cross(BASE + 1), layer_cross(1))
+
+    def test_exact_roundtrip_on_unstructured_states(self):
+        rng = Random(20261013)
+        for trial in range(24):
+            q = tuple(Fraction(rng.randrange(-9, 10), rng.randrange(1, 10))
+                      for _ in ADDRESSES)
+            p = tuple(Fraction(rng.randrange(-9, 10), rng.randrange(1, 10))
+                      for _ in ADDRESSES)
+            original = State(q, p, scale_seed(trial % 4))
+            state = original
+            for _ in range(8):
+                state = step(state)
+                validate(state)
+            for _ in range(8):
+                state = unstep(state)
+            self.assertEqual(state, original)
+            self.assertEqual(step(unstep(original)), original)
+
+    def test_pulse_orientation_and_inverse_via_exponent(self):
+        state = step(seed(2))
+        self.assertEqual(pulse(state, +1), step(state))
+        self.assertEqual(pulse(state, -1), unstep(state))
+        self.assertEqual(pulse(pulse(state, +1), -1), state)
+        self.assertEqual(pulse(pulse(state, -1), +1), state)
+
+    def test_totals_and_complementary_fields(self):
+        initial = seed()
+        state = initial
+        for _ in range(16):
+            self.assertEqual(sum(state.q), sum(initial.q))
+            self.assertEqual(sum(state.p), sum(initial.p))
+            for a in ADDRESSES:
+                self.assertEqual(state.q[a] + state.q[complement(a)], UNIT)
+                self.assertEqual(state.p[a] + state.p[complement(a)], ZERO)
+            self.assertEqual(state.scale.normalized_big_pair(),
+                             (state.scale.closed, state.scale.rest))
+            self.assertGreater(state.scale.rest, ZERO)
+            state = step(state)
+
+    def test_gauge_covariance_and_all_readers(self):
+        state = step(seed(3))
+        shifted = gauge_shift(state, Fraction(7, 3), Fraction(-11, 5))
+        self.assertEqual(step(shifted),
+                         gauge_shift(step(state),
+                                     Fraction(7, 3), Fraction(-11, 5)))
+        for reader, other in product(ADDRESSES, repeat=TWO):
+            sight = view(state, reader)
+            self.assertEqual(view(shifted, reader), sight)
+            self.assertEqual(rereference(sight, other), view(state, other))
+            self.assertEqual(evolve_view(sight), view(step(state), reader))
+
+    def test_complement_covariance_and_direction_reversal(self):
+        state = step(seed())
+        self.assertEqual(step(mirror(state)), mirror(step(state)))
+        h = Fraction(1, BASE)
+        q_new, p_new = shear_pair(state.q, state.p, h)
+        q_back, p_back = shear_pair(q_new, tuple(-v for v in p_new), h)
+        self.assertEqual(q_back, state.q)
+        self.assertEqual(p_back, tuple(-v for v in state.p))
+
+    def test_real_feedback_and_reader_participation(self):
+        empty = (ZERO,) * BASE
+        baseline = State(empty, empty, scale_seed())
+        q4 = tuple(UNIT * (a == LOOP[0]) for a in ADDRESSES)
+        response4 = step(replace(baseline, q=q4))
+        destination = dr(sum(LOOP))
+        self.assertNotEqual(response4.p[destination], ZERO)
+        self.assertNotEqual(response4.q[destination], ZERO)
+        q2 = tuple(UNIT * (a == destination) for a in ADDRESSES)
+        response2 = step(replace(baseline, q=q2))
+        self.assertEqual(response2.p[LOOP[0]], response4.p[destination])
+        self.assertNotEqual(response2.q[LOOP[0]], ZERO)
+        self.assertEqual(evolve_view(view(replace(baseline, q=q2), LOOP[0])),
+                         view(response2, LOOP[0]))
+
+    def test_no_invented_bridge_or_collapse_of_loop(self):
+        self.assertEqual(components(),
+                         ((0, 3, 6, 9), (1, 8), (2, 4, 5, 7)))
+        state = seed()
+        self.assertEqual(step(state).loop, state.loop[::-1])
+        self.assertEqual(step(step(state)).loop, state.loop)
+        empty = (ZERO,) * BASE
+        quiet = State(empty, empty, scale_seed())
+        self.assertEqual(step(quiet).q, empty)
+        self.assertEqual(step(quiet).p, empty)
+
+
+class EmergentChecks(unittest.TestCase):
+    def test_crossing_orbit_is_algebraic(self):
+        # F^k(a) = a^(2^k) mod 9: Trajektorie ohne Verzweigung.
+        for a in ADDRESSES:
+            self.assertEqual(TRAJECTORIES[a][0], a)
+            self.assertEqual(TRAJECTORIES[a][1], layer_cross(a))
+            self.assertEqual(TRAJECTORIES[a][2], layer_cross(layer_cross(a)))
+        # Struktur stimmt mit der klassischen Orbit-Zerlegung ueberein.
+        self.assertEqual(crossing_orbit(0), CrossingOrbit((), (0,)))
+        self.assertEqual(crossing_orbit(1), CrossingOrbit((), (1,)))
+        self.assertEqual(crossing_orbit(2), CrossingOrbit((2,), (4, 7)))
+        self.assertEqual(crossing_orbit(4), CrossingOrbit((), (4, 7)))
+        self.assertEqual(crossing_orbit(5), CrossingOrbit((5,), (7, 4)))
+        self.assertEqual(crossing_orbit(7), CrossingOrbit((), (7, 4)))
+
+    def test_structural_role_weights(self):
+        self.assertEqual(structural_role(crossing_orbit(0)),
+                         "Grenzverlauf zur Null-Lesart")
+        self.assertEqual(structural_role(crossing_orbit(1)),
+                         "Grenzverlauf zur Eins-Lesart")
+        self.assertEqual(structural_role(crossing_orbit(4)),
+                         "Gegenlaeufige Mittelschleife")
+        self.assertEqual(structural_role(crossing_orbit(5)),
+                         "Gegenlaeufige Mittelschleife")
+
+    def test_loop_phase_is_indicator_sum(self):
+        self.assertEqual(loop_phase(LOOP, LOOP[0]), "erste Schleifenlesart")
+        self.assertEqual(loop_phase(LOOP, LOOP[1]), "zweite Schleifenlesart")
+        self.assertEqual(loop_phase(LOOP, 0), "ausserhalb des Zweizyklus")
+        self.assertEqual(loop_phase(LOOP[::-1], LOOP[0]),
+                         "zweite Schleifenlesart")
+        self.assertEqual(loop_phase(LOOP[::-1], LOOP[1]),
+                         "erste Schleifenlesart")
+
+    def test_scope_masks_are_the_relations_themselves(self):
+        sight = genomic_view(genomic_seed(), 4)
+        all_ids = tuple(r.context.locus for r in read_contexts(sight))
+        comp_ids = tuple(r.context.locus
+                         for r in read_contexts(sight, "component"))
+        hood_ids = tuple(r.context.locus
+                         for r in read_contexts(sight, "neighborhood"))
+        self.assertEqual(all_ids, ADDRESSES)
+        self.assertEqual(comp_ids, (2, 4, 5, 7))
+        self.assertEqual(hood_ids, tuple(sorted({4, *NEIGHBORS[4]})))
+        outer = genomic_view(genomic_seed(), 1)
+        self.assertEqual(tuple(r.context.locus
+                               for r in read_contexts(outer, "component")),
+                         (1, 8))
+        with self.assertRaises(KeyError):
+            read_contexts(sight, "remote-signals")
+
+
+class DNAIntegrationChecks(unittest.TestCase):
+    def test_all_contexts_preserve_original_relations(self):
+        for a in ADDRESSES:
+            source, context = fiber(a), translate_fiber(a)
+            self.assertEqual(
+                (context.locus, context.complementary_locus,
+                 context.context_crossing, context.radial_shell,
+                 context.strand_fraction, context.counter_strand_fraction),
+                (source.address, source.opposite, source.crossing,
+                 source.shell, source.period, source.opposite_period))
+        self.assertTrue(translate_fiber(0).is_boundary)
+        self.assertTrue(translate_fiber(REFERENCE).is_boundary)
+        self.assertNotEqual(translate_fiber(0).strand_fraction,
+                            translate_fiber(REFERENCE).strand_fraction)
+        self.assertEqual(translate_fiber(4).base, translate_fiber(8).base)
+        self.assertNotEqual(translate_fiber(4).context_crossing,
+                            translate_fiber(8).context_crossing)
+
+    def test_full_translation_commutes_in_both_directions(self):
+        rng = Random(20261013)
+        for n in (0, 1, 3, 10):
+            for _ in range(8):
+                q = tuple(Fraction(rng.randrange(-9, 10),
+                                   rng.randrange(1, 10))
+                          for _ in ADDRESSES)
+                p = tuple(Fraction(rng.randrange(-9, 10),
+                                   rng.randrange(1, 10))
+                          for _ in ADDRESSES)
+                source = State(q, p, scale_seed(n))
+                dna = translate_state(source)
+                self.assertEqual(dna.to_core(), source)
+                self.assertEqual(genomic_step(dna),
+                                 translate_state(step(source)))
+                self.assertEqual(genomic_unstep(dna),
+                                 translate_state(unstep(source)))
+                self.assertEqual(genomic_unstep(genomic_step(dna)), dna)
+                self.assertEqual(genomic_step(genomic_unstep(dna)), dna)
+
+    def test_scale_backward_and_normalized_pairs(self):
+        for n in (0, 1, 3, 100):
+            scale = FoldingScale.from_core(scale_seed(n))
+            onward = scale.pulse(+1)
+            self.assertEqual(onward.pulse(-1), scale)
+            self.assertEqual(scale.normalized_big_pair(),
+                             (scale.integrated_fraction, scale.open_fraction))
+            self.assertGreater(onward.open_fraction, ZERO)
+        signed = FoldingScale.from_core(scale_seed(-1))
+        self.assertLess(signed.integrated_fraction, ZERO)
+        self.assertEqual(signed.pulse(+1).pulse(-1), signed)
+
+    def test_fields_loop_and_reader_really_coevolve(self):
+        dna = genomic_seed()
+        following = genomic_step(dna)
+        self.assertNotEqual(following.q, dna.q)
+        self.assertNotEqual(following.p, dna.p)
+        self.assertNotEqual(following.q[LOOP[0]], dna.q[LOOP[0]])
+        self.assertEqual(following.loop, dna.loop[::-1])
+        self.assertNotEqual(genomic_view(following, LOOP[0]),
+                            genomic_view(dna, LOOP[0]))
+        self.assertNotEqual(
+            read_context(genomic_view(following, LOOP[0]),
+                         LOOP[0]).loop_phase,
+            read_context(genomic_view(dna, LOOP[0]),
+                         LOOP[0]).loop_phase)
+
+    def test_all_readers_evolve_and_rewind_locally(self):
+        dna = genomic_step(genomic_seed())
+        for reader in ADDRESSES:
+            sight = genomic_view(dna, reader)
+            self.assertEqual(evolve_genomic_view(sight),
+                             genomic_view(genomic_step(dna), reader))
+            self.assertEqual(rewind_genomic_view(sight),
+                             genomic_view(genomic_unstep(dna), reader))
+            self.assertEqual(rewind_genomic_view(evolve_genomic_view(sight)),
+                             sight)
+            self.assertEqual(sight.relative_q[reader], ZERO)
+            self.assertEqual(sight.relative_p[reader], ZERO)
+
+    def test_gauge_and_reader_changes_preserve_relational_readouts(self):
+        dna = genomic_step(genomic_seed())
+        shifted = genomic_gauge_shift(dna, Fraction(17, 3), Fraction(-13, 7))
+        for reader, other in product(ADDRESSES, repeat=TWO):
+            sight = genomic_view(dna, reader)
+            self.assertEqual(genomic_view(shifted, reader), sight)
+            self.assertEqual(rereference_genomic_view(sight, other),
+                             genomic_view(dna, other))
+            first = read_contexts(sight)
+            second = read_contexts(genomic_view(dna, other))
+            self.assertEqual(
+                tuple((r.complement_q_difference,
+                       r.complement_p_difference,
+                       r.current_feedback, r.relation_load)
+                      for r in first),
+                tuple((r.complement_q_difference,
+                       r.complement_p_difference,
+                       r.current_feedback, r.relation_load)
+                      for r in second))
+
+    def test_feedback_is_a_changing_relational_readout(self):
+        zero_fields = (ZERO,) * BASE
+        source = DNAState(zero_fields, zero_fields,
+                          FoldingScale.from_core(scale_seed()), LOOP)
+        excited = replace(source,
+                          q=tuple(UNIT * (a == LOOP[0])
+                                  for a in ADDRESSES))
+        before = read_context(genomic_view(excited, LOOP[0]),
+                              dr(sum(LOOP)))
+        after_state = genomic_step(excited)
+        after = read_context(genomic_view(after_state, LOOP[0]),
+                             dr(sum(LOOP)))
+        self.assertTrue(before.is_return_address)
+        self.assertNotEqual(before.current_feedback, ZERO)
+        self.assertNotEqual(after_state.p[dr(sum(LOOP))], ZERO)
+        self.assertNotEqual(after.current_feedback, before.current_feedback)
+        self.assertGreater(before.relation_load, ZERO)
+
+    def test_biological_labels_do_not_become_hidden_drivers(self):
+        renamed = replace(DEFAULT_DNA_SCHEMA,
+                          name="Gleiche Basisrelation, alternative Hypothese",
+                          candidate_roles=("offene Zuordnung",) * BASE)
+        other_bases = {"A": "C", "T": "G", "C": "A", "G": "T", None: None}
+        alternative = replace(renamed,
+                              bases=tuple(other_bases[b]
+                                          for b in renamed.bases))
+        original = genomic_seed()
+        changed = genomic_seed(schema=alternative)
+        self.assertEqual(genomic_step(original).to_core(),
+                         genomic_step(changed).to_core())
+        self.assertNotEqual(translate_fiber(4, original.schema).base,
+                            translate_fiber(4, changed.schema).base)
+        self.assertEqual(translate_fiber(4, original.schema).structural_role,
+                         translate_fiber(4, changed.schema).structural_role)
+
+    def test_sequence_annotation_and_reverse_complement(self):
+        annotation = SequenceAnnotation("ATCG", (4, 1, 2, 3))
+        annotation.validate_with(DEFAULT_DNA_SCHEMA)
+        counterpart = annotation.reverse_complement()
+        self.assertEqual(counterpart.sequence, "CGAT")
+        self.assertEqual(counterpart.loci, (6, 7, 8, 5))
+        counterpart.validate_with(DEFAULT_DNA_SCHEMA)
+        self.assertEqual(counterpart.reverse_complement(), annotation)
+        source = genomic_seed(annotation=annotation)
+        state = source
+        for _ in range(12):
+            state = genomic_step(state)
+            self.assertEqual(state.annotation, annotation)
+            self.assertEqual(genomic_view(state, 4).annotation, annotation)
+        for _ in range(12):
+            state = genomic_unstep(state)
+        self.assertEqual(state, source)
+
+    def test_rejects_silent_domain_changes(self):
+        state = genomic_seed()
+        for reader in (-1, BASE, True, Fraction(4)):
+            with self.assertRaises(ValueError):
+                genomic_view(state, reader)
+        wrong = list(DEFAULT_DNA_SCHEMA.bases)
+        wrong[1] = "C"
+        with self.assertRaises(ValueError):
+            replace(DEFAULT_DNA_SCHEMA, bases=tuple(wrong))
+        with self.assertRaises(ValueError):
+            replace(state.scale, scale_factor=10.0)
+        with self.assertRaises(ValueError):
+            replace(state, q=(ZERO,) * (BASE - 1))
+        with self.assertRaises(ValueError):
+            replace(state, annotation=SequenceAnnotation("A", (1,)))
+
+
+def verify_dna():
+    suite = unittest.TestSuite((
+        unittest.defaultTestLoader.loadTestsFromTestCase(RelationalChecks),
+        unittest.defaultTestLoader.loadTestsFromTestCase(EmergentChecks),
+        unittest.defaultTestLoader.loadTestsFromTestCase(DNAIntegrationChecks),
+    ))
+    return unittest.TextTestRunner(verbosity=2).run(suite)
+
+
+# ===========================================================================
+# 10  Demo
+# ===========================================================================
+
+def run_genomic_demo():
+    annotation = SequenceAnnotation("ATCG", (4, 1, 2, 3))
+    initial = genomic_seed(annotation=annotation)
+    state = initial
+    for _ in range(3):
+        state = genomic_step(state)
+    reader = LOOP[0]
+    sight = genomic_view(state, reader)
+    return_context = read_context(sight, dr(sum(state.loop)))
+    print("\n=== DNA FROM WITHIN: VOLLRELATIONALE EMERGENTE FASSUNG ===")
+    print("Mitbewegter Lesebezug:", reader, genomic_name(reader))
+    print("Lesestellenzustand entwickelt:", state.q[reader] != initial.q[reader])
+    print("Beide Felder entwickelt:",
+          state.q != initial.q and state.p != initial.p)
+    print("Gleichzeitig erhaltene Schleifenlesarten:", state.loop)
+    print("Gemeinsamer Abschluss:", state.scale.total_genomic_field)
+    print("Offener Skalenanteil:", state.scale.open_fraction)
+    print("Normierte Pole stimmen ueberein:",
+          state.scale.normalized_big_pair()
+          == (state.scale.integrated_fraction, state.scale.open_fraction))
+    print("Rueckkehradresse:", return_context.context.locus)
+    print("Aktuelle Rueckwirkung:", return_context.current_feedback)
+    print("Eigene Verbindungskomponente:",
+          tuple(r.context.locus for r in read_contexts(sight, "component")))
+    print("Lokale Entwicklung = relative Gesamtauslesung:",
+          evolve_genomic_view(sight) == genomic_view(genomic_step(state),
+                                                     reader))
+    print("Exakte Rueckfaltung ohne Verlaufsspeicher:",
+          genomic_unstep(genomic_step(state)) == state)
+    print("Demonstrationsannotation / Reverse-Komplement:",
+          annotation.sequence, "/", annotation.reverse_complement().sequence)
+    print("\nFeste Kontextzuordnung und strukturgeleitete Rolle:")
+    for a in ADDRESSES:
+        context = translate_fiber(a)
+        print(f"  {a} <-> {context.complementary_locus}: "
+              f"{context.base or 'Grenze'}; Kreuzung {context.context_crossing}; "
+              f"{context.structural_role}")
+
+
+if __name__ == "__main__":
+    outcome = verify_dna()
+    if not outcome.wasSuccessful():
+        raise SystemExit(1)
+    run_genomic_demo()
